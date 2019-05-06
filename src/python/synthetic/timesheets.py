@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
+import logging
 from pathlib import Path
 
 import attr
@@ -15,6 +16,7 @@ from dateutil.rrule import DAILY, FR, MO, TH, TU, WE, rrule
 from requests_html import HTMLSession
 from terminaltables import AsciiTable
 
+log = logging.getLogger(__name__)
 requests_cache.install_cache()
 
 # FIXME: envvar
@@ -202,6 +204,7 @@ def list_timesheets():
         key=lambda timesheet: datetime.strptime(timesheet.week, '%d/%m/%Y'),
         reverse=True,
     )[:4]
+    # TODO: num_weeks argument
 
     for timesheet in last_months_timesheets:
         echo('blue', '{week} {status} {hours}'.format(**attr.asdict(timesheet)))
@@ -253,25 +256,34 @@ def store_missing_timesheets():
     session = get_session()
 
     timesheets = get_timesheets(session)
-
-    last_approved_week = sorted(
+    last_approved_timesheet = sorted(
         [
-            datetime.strptime(timesheet.week, '%d/%m/%Y')
+            timesheet
             for timesheet in timesheets
             if timesheet.status == 'Approved'
-        ]
+        ],
+        key=lambda t: datetime.strptime(t.week, '%d/%m/%Y') 
     )[-1]
-    unapproved_start_week = last_approved_week + relativedelta(weekday=MO, weeks=+1)
+    timesheet_entries = get_timesheet_entries(session, last_approved_timesheet)
+
+    last_approved_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
     yesterday = datetime.now() + relativedelta(days=-1)
 
     # https://stackoverflow.com/a/11550426
     missing_days = list(
         rrule(
             DAILY,
-            dtstart=unapproved_start_week,
+            dtstart=last_approved_date + relativedelta(days=1),
             until=yesterday,
             byweekday=(MO, TU, WE, TH, FR),
         )
+    )
+
+    log.debug(
+        f'last_approved_date: {last_approved_date}',
+        f'from: {last_approved_date + relativedelta(days=-1)}',
+        f'to yesterday: {yesterday}',
+        f'missing_days: {missing_days}',
     )
 
     missing_timesheet_entries = []
