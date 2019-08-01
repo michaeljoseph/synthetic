@@ -219,10 +219,13 @@ def list_timesheets():
 @click.command()
 def confirm_draft_timesheets():
     session = get_session()
+    # https://stackoverflow.com/questions/4934783/using-python-2-6-how-do-i-get-the-day-of-the-month-as-an-integer
+    beginning_of_the_month = datetime.now().day == 1
     draft_timesheets = [
         timesheet
         for timesheet in get_timesheets(session)
-        if timesheet.status == 'Draft' and timesheet.hours == '40h 0m'
+        if timesheet.status == 'Draft'
+        and (timesheet.hours == '40h 0m' or beginning_of_the_month)
     ]
 
     for timesheet in draft_timesheets:
