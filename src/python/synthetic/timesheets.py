@@ -269,12 +269,6 @@ def workflow():
 
 
 @click.command()
-def standup():
-    today = datetime.now()
-    echo('yellow', 'TODO: text-standup {}'.format(today))
-
-
-@click.command()
 def list_timesheets():
     session = get_session()
 

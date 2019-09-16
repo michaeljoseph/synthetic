@@ -17,5 +17,4 @@ def main(debug):
 main.add_command(timesheets.store_missing_timesheets)
 main.add_command(timesheets.confirm_draft_timesheets)
 main.add_command(timesheets.list_timesheets)
-main.add_command(timesheets.standup)
 main.add_command(timesheets.workflow)
