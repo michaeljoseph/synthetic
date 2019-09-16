@@ -34,6 +34,8 @@ COOKIES = {
     'SERVERID': 'http27_49-6020',
     '_gid': 'GA1.2.607146262.1531921353',
 }
+last_choice = None
+DEFAULT_REFERENCES = ['Quidco BAU']
 
 
 @attr.s
@@ -166,109 +168,16 @@ def get_timesheet_entries(session, timesheet):
     return entries
 
 
-@click.command()
-def workflow():
-    session = get_session()
-
-    workflow_view = natural_api(session, f'{NATURAL_HR}/hr/workflow-view').html.xpath(
-        '//div[@class="content"]//div[@class="media-body"]'
+@click.option('--debug', help='Enables debug logging.', is_flag=True, default=False)
+@click.group(context_settings=dict(help_option_names=[u'-h', u'--help']))
+def synthetic(debug: bool):
+    """Synthetic timesheets and approvals for naturalhr"""
+    logging.basicConfig(
+        format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
+        level=logging.DEBUG if debug else logging.INFO,
     )
-    to_be_approved = []
-    wfh_requests = []
-    for workflow_item in workflow_view:
-        approval_link = workflow_item.links.pop()
-        log.debug(approval_link)
-        hidden_fields = natural_api(session, f'{NATURAL_HR}{approval_link}').html.xpath(
-            '//input[@type="hidden"]'
-        )
 
-        log.debug(workflow_item.text)
-        item_parts = workflow_item.text.split()
-        if len(item_parts) == 5:
-            name, surname, _, _, week = item_parts
-
-            employee_timesheet = {
-                field.attrs['name']: field.attrs['value']
-                for field in hidden_fields
-                if 'name' in field.attrs
-            }
-            for field in ['emp_comments', 'mgr_comments', 'approve']:
-                employee_timesheet[field] = ''
-
-            to_be_approved.append(
-                dict(
-                    name=f'{name} {surname}',
-                    week=week,
-                    hours=int(employee_timesheet['weekTotal']) / 60 / 60,
-                    link=approval_link,
-                    payload=employee_timesheet,
-                )
-            )
-        else:
-            name, surname = item_parts[:2]
-            wfh_date = item_parts[5]
-
-            all_fields = natural_api(
-                session, f'{NATURAL_HR}{approval_link}'
-            ).html.xpath('//input')
-            wfh_request = {
-                field.attrs['name']: field.attrs['value']
-                for field in all_fields
-                if 'name' in field.attrs
-            }
-
-            for field in all_fields:
-                if field.attrs['type'] == 'radio' and 'checked' in field.attrs:
-                    wfh_request[field.attrs['name']] = field.attrs['value']
-
-            for field in ['comments', 'mgr_comments', 'approve']:
-                wfh_request[field] = ''
-            log.info(wfh_request)
-            wfh_requests.append(
-                dict(
-                    name=f'{name} {surname}',
-                    wfh_date=wfh_date,
-                    link=approval_link,
-                    payload=wfh_request,
-                )
-            )
-
-    if wfh_requests:
-        print(
-            to_ascii_table(
-                [
-                    dict(name=wfh['name'], wfh_date=wfh['wfh_date'])
-                    for wfh in wfh_requests
-                ]
-            )
-        )
-        for wfh in wfh_requests:
-            if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
-                print(f'{NATURAL_HR}{wfh["link"]}')
-                print(wfh['payload'])
-                natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
-
-    if to_be_approved:
-        print(
-            to_ascii_table(
-                [
-                    dict(
-                        name=timesheet['name'],
-                        week=timesheet['week'],
-                        hours=timesheet['hours'],
-                    )
-                    for timesheet in to_be_approved
-                ]
-            )
-        )
-        for timesheet in to_be_approved:
-            if click.confirm(f'✅ {timesheet["name"]} {timesheet["week"]}️'):
-                natural_api_post(
-                    session, f'{NATURAL_HR}{timesheet["link"]}', timesheet['payload']
-                )
-
-
-@click.command()
+@synthetic.command()
 def list_timesheets():
     session = get_session()
 
@@ -287,117 +196,6 @@ def list_timesheets():
                 [attr.asdict(timesheet_entry) for timesheet_entry in timesheet_entries]
             )
         )
-
-
-@click.command()
-def confirm_draft_timesheets():
-    session = get_session()
-    # https://stackoverflow.com/questions/4934783/using-python-2-6-how-do-i-get-the-day-of-the-month-as-an-integer
-    beginning_of_the_month = datetime.now().day == 1
-    draft_timesheets = [
-        timesheet
-        for timesheet in get_timesheets(session)
-        if timesheet.status == 'Draft'
-        and (timesheet.hours == '40h 0m' or beginning_of_the_month)
-    ]
-
-    for timesheet in draft_timesheets:
-        echo('blue', '{week} {status} {hours}'.format(**attr.asdict(timesheet)))
-        echo('yellow', timesheet)
-        confirm_timesheet(session, timesheet)
-
-
-def confirm_timesheet(session, timesheet):
-    confirm_timesheet_url = '{}{}'.format(
-        NATURAL_HR, timesheet.link('timesheet-confirm')
-    )
-
-    natural_api_post(
-        session,
-        confirm_timesheet_url,
-        {
-            'wb': timesheet.week,
-            # todo: timesheet.hours => minutes
-            'weekTotal': '144000',
-            'check': '1',
-            'emp_comments': '',
-            'submit': '',
-        },
-    )
-    echo('green', 'Confirmed timesheet for {}'.format(timesheet.week))
-
-
-@click.command()
-def store_missing_timesheets():
-    session = get_session()
-
-    timesheets = get_timesheets(session)
-    last_approved_timesheet = sorted(
-        [timesheet for timesheet in timesheets if timesheet.status == 'Approved'],
-        key=lambda t: datetime.strptime(t.week, '%d/%m/%Y'),
-    )[-1]
-    timesheet_entries = get_timesheet_entries(session, last_approved_timesheet)
-
-    last_approved_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
-    yesterday = datetime.now() + relativedelta(days=-1)
-
-    # https://stackoverflow.com/a/11550426
-    missing_days = list(
-        rrule(
-            DAILY,
-            dtstart=last_approved_date + relativedelta(days=1),
-            until=yesterday,
-            byweekday=(MO, TU, WE, TH, FR),
-        )
-    )
-
-    log.debug(
-        f'last_approved_date: {last_approved_date}\n'
-        f'from: {last_approved_date + relativedelta(days=-1)}\n'
-        f'to yesterday: {yesterday}\n'
-        f'missing_days: {missing_days}\n'
-    )
-
-    missing_timesheet_entries = []
-    for missing_day in missing_days:
-        missing_timesheet_entries.extend(
-            ensure_references(
-                timesheet_from_standup(missing_day), get_references(session)
-            )
-        )
-
-    store_timesheets(session, missing_timesheet_entries)
-
-
-def store_timesheets(session, timesheet_entries):
-    add_timesheet_url = '{}/hr/self-service/timesheets/timesheet-add'.format(NATURAL_HR)
-
-    for timesheet_entry in timesheet_entries:
-        # TODO: check if there are existing entries
-        natural_api_post(
-            session,
-            add_timesheet_url,
-            {
-                'week_beginning': '{:%d/%m/%y}'.format(timesheet_entry.week),
-                'date': '{:%a%d/%m/%Y}'.format(timesheet_entry.date),
-                'start': timesheet_entry.start_time,
-                'end': timesheet_entry.end_time,
-                'breaks': timesheet_entry.breaks,
-                'reference': timesheet_entry.reference,
-                'comments': timesheet_entry.comments,
-                'billable': '',
-                'submit_ts': '',
-            },
-        )
-        echo(
-            'green',
-            'Added timesheet entry for {:%a%d/%m/%Y}'.format(timesheet_entry.date),
-        )
-        echo('yellow', timesheet_entry)
-
-
-last_choice = None
-DEFAULT_REFERENCES = ['Quidco BAU', 'V3 BAU', 'R5Bet7 – Emarsys sync (URT)']
 
 
 def choose_reference(references):
@@ -507,3 +305,212 @@ def timesheet_from_standup(day):
         return [TimeSheetEntry(week_start, day, '0900', '1800', '60', None, comments)]
 
     raise Exception('No entries for {}'.format(day))
+
+
+def store_timesheets(session, timesheet_entries):
+    add_timesheet_url = '{}/hr/self-service/timesheets/timesheet-add'.format(NATURAL_HR)
+
+    for timesheet_entry in timesheet_entries:
+        # TODO: check if there are existing entries
+        natural_api_post(
+            session,
+            add_timesheet_url,
+            {
+                'week_beginning': '{:%d/%m/%y}'.format(timesheet_entry.week),
+                'date': '{:%a%d/%m/%Y}'.format(timesheet_entry.date),
+                'start': timesheet_entry.start_time,
+                'end': timesheet_entry.end_time,
+                'breaks': timesheet_entry.breaks,
+                'reference': timesheet_entry.reference,
+                'comments': timesheet_entry.comments,
+                'billable': '',
+                'submit_ts': '',
+            },
+        )
+        echo(
+            'green',
+            'Added timesheet entry for {:%a%d/%m/%Y}'.format(timesheet_entry.date),
+        )
+        echo('yellow', timesheet_entry)
+
+
+@synthetic.command()
+def store_missing_timesheets():
+    session = get_session()
+
+    timesheets = get_timesheets(session)
+    last_approved_timesheet = sorted(
+        [timesheet for timesheet in timesheets if timesheet.status == 'Approved'],
+        key=lambda t: datetime.strptime(t.week, '%d/%m/%Y'),
+    )[-1]
+    timesheet_entries = get_timesheet_entries(session, last_approved_timesheet)
+
+    last_approved_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
+    yesterday = datetime.now() + relativedelta(days=-1)
+
+    # https://stackoverflow.com/a/11550426
+    missing_days = list(
+        rrule(
+            DAILY,
+            dtstart=last_approved_date + relativedelta(days=1),
+            until=yesterday,
+            byweekday=(MO, TU, WE, TH, FR),
+        )
+    )
+
+    log.debug(
+        f'last_approved_date: {last_approved_date}\n'
+        f'from: {last_approved_date + relativedelta(days=-1)}\n'
+        f'to yesterday: {yesterday}\n'
+        f'missing_days: {missing_days}\n'
+    )
+
+    missing_timesheet_entries = []
+    for missing_day in missing_days:
+        missing_timesheet_entries.extend(
+            ensure_references(
+                timesheet_from_standup(missing_day), get_references(session)
+            )
+        )
+
+    store_timesheets(session, missing_timesheet_entries)
+
+
+def confirm_timesheet(session, timesheet):
+    confirm_timesheet_url = '{}{}'.format(
+        NATURAL_HR, timesheet.link('timesheet-confirm')
+    )
+
+    natural_api_post(
+        session,
+        confirm_timesheet_url,
+        {
+            'wb': timesheet.week,
+            # todo: timesheet.hours => minutes
+            'weekTotal': '144000',
+            'check': '1',
+            'emp_comments': '',
+            'submit': '',
+        },
+    )
+    echo('green', 'Confirmed timesheet for {}'.format(timesheet.week))
+
+
+@synthetic.command()
+def confirm_draft_timesheets():
+    session = get_session()
+    # https://stackoverflow.com/questions/4934783/using-python-2-6-how-do-i-get-the-day-of-the-month-as-an-integer
+    beginning_of_the_month = datetime.now().day == 1
+    draft_timesheets = [
+        timesheet
+        for timesheet in get_timesheets(session)
+        if timesheet.status == 'Draft'
+        and (timesheet.hours == '40h 0m' or beginning_of_the_month)
+    ]
+
+    for timesheet in draft_timesheets:
+        echo('blue', '{week} {status} {hours}'.format(**attr.asdict(timesheet)))
+        echo('yellow', timesheet)
+        confirm_timesheet(session, timesheet)
+
+
+@synthetic.command()
+def workflow():
+    session = get_session()
+
+    workflow_view = natural_api(session, f'{NATURAL_HR}/hr/workflow-view').html.xpath(
+        '//div[@class="content"]//div[@class="media-body"]'
+    )
+    to_be_approved = []
+    wfh_requests = []
+    for workflow_item in workflow_view:
+        approval_link = workflow_item.links.pop()
+        log.debug(approval_link)
+        hidden_fields = natural_api(session, f'{NATURAL_HR}{approval_link}').html.xpath(
+            '//input[@type="hidden"]'
+        )
+
+        log.debug(workflow_item.text)
+        item_parts = workflow_item.text.split()
+        if len(item_parts) == 5:
+            name, surname, _, _, week = item_parts
+
+            employee_timesheet = {
+                field.attrs['name']: field.attrs['value']
+                for field in hidden_fields
+                if 'name' in field.attrs
+            }
+            for field in ['emp_comments', 'mgr_comments', 'approve']:
+                employee_timesheet[field] = ''
+
+            to_be_approved.append(
+                dict(
+                    name=f'{name} {surname}',
+                    week=week,
+                    hours=int(employee_timesheet['weekTotal']) / 60 / 60,
+                    link=approval_link,
+                    payload=employee_timesheet,
+                )
+            )
+        else:
+            name, surname = item_parts[:2]
+            wfh_date = item_parts[5]
+
+            all_fields = natural_api(
+                session, f'{NATURAL_HR}{approval_link}'
+            ).html.xpath('//input')
+            wfh_request = {
+                field.attrs['name']: field.attrs['value']
+                for field in all_fields
+                if 'name' in field.attrs
+            }
+
+            for field in all_fields:
+                if field.attrs['type'] == 'radio' and 'checked' in field.attrs:
+                    wfh_request[field.attrs['name']] = field.attrs['value']
+
+            for field in ['comments', 'mgr_comments', 'approve']:
+                wfh_request[field] = ''
+            log.info(wfh_request)
+            wfh_requests.append(
+                dict(
+                    name=f'{name} {surname}',
+                    wfh_date=wfh_date,
+                    link=approval_link,
+                    payload=wfh_request,
+                )
+            )
+
+    if wfh_requests:
+        print(
+            to_ascii_table(
+                [
+                    dict(name=wfh['name'], wfh_date=wfh['wfh_date'])
+                    for wfh in wfh_requests
+                ]
+            )
+        )
+        for wfh in wfh_requests:
+            if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
+                print(f'{NATURAL_HR}{wfh["link"]}')
+                print(wfh['payload'])
+                natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
+
+    if to_be_approved:
+        print(
+            to_ascii_table(
+                [
+                    dict(
+                        name=timesheet['name'],
+                        week=timesheet['week'],
+                        hours=timesheet['hours'],
+                    )
+                    for timesheet in to_be_approved
+                ]
+            )
+        )
+        for timesheet in to_be_approved:
+            if click.confirm(f'✅ {timesheet["name"]} {timesheet["week"]}️'):
+                natural_api_post(
+                    session, f'{NATURAL_HR}{timesheet["link"]}', timesheet['payload']
+                )

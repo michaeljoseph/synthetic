@@ -1,11 +1,8 @@
-from synthetic.cli import main
-
-import click
 from click.testing import CliRunner
+from synthetic import synthetic
 
 
 def test_help():
-    runner = CliRunner()
-    result = runner.invoke(main, ['-h'], prog_name='synthetic')
+    result = CliRunner().invoke(synthetic, ['-h'], prog_name='synthetic')
     assert result.exit_code == 0
     assert 'Usage: synthetic' in result.output
