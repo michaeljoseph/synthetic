@@ -2,16 +2,18 @@
 name = "synthetic"
 version = "0.0.1"
 description = "Synthetic timesheets and approvals for naturalhr"
-authors = ["Michael Joseph <michaeljoseph@gmail.com>"]
-packages = [
-    { include = "synthetic", from = "src/python" },
+authors = ["Michael Joseph <michaeljoseph+@gmail.com>"]
+include = [
+    "README.md",
+    "tox.ini",
+    "tests/*.py",
 ]
 
 [tool.poetry.scripts]
-synthetic = "synthetic.cli:main"
+synthetic = 'synthetic:synthetic'
 
 [tool.poetry.dependencies]
-python = "3.7.4"
+python = "^3.6"
 attrs = "^19.1"
 click = "^7.0"
 python-dateutil = "^2.8"
@@ -21,11 +23,13 @@ terminaltables = "^3.1"
 pycookiecheat = "^0.4.3"
 
 [tool.poetry.dev-dependencies]
-pytest = "^5.0"
-flake8 = "^3.7"
-autopep8 = "^1.4"
-isort = "^4.3"
-black = {version = "^18.3-alpha.0",allows-prereleases = true}
+pre-commit = "^1.18"
+pytest-cov = "^2.7"
+pytest-watch = "^4.2"
+
+[tool.black]
+line-length = 88
+skip-string-normalization = "True"
 
 [build-system]
 requires = ["poetry>=0.12"]

@@ -4,7 +4,7 @@ import click
 from click.testing import CliRunner
 
 
-def test_something():
+def test_help():
     runner = CliRunner()
     result = runner.invoke(main, ['-h'], prog_name='synthetic')
     assert result.exit_code == 0
