@@ -243,7 +243,7 @@ def workflow():
             )
         )
         for wfh in wfh_requests:
-            if click.confirm(f'✅ Approve WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
+            if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
                 print(f'{NATURAL_HR}{wfh["link"]}')
                 print(wfh['payload'])
                 natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
@@ -262,7 +262,7 @@ def workflow():
             )
         )
         for timesheet in to_be_approved:
-            if click.confirm(f'✅ Approve {timesheet["name"]} {timesheet["week"]}️'):
+            if click.confirm(f'✅ {timesheet["name"]} {timesheet["week"]}️'):
                 natural_api_post(
                     session, f'{NATURAL_HR}{timesheet["link"]}', timesheet['payload']
                 )
@@ -352,10 +352,10 @@ def store_missing_timesheets():
     )
 
     log.debug(
-        f'last_approved_date: {last_approved_date}',
-        f'from: {last_approved_date + relativedelta(days=-1)}',
-        f'to yesterday: {yesterday}',
-        f'missing_days: {missing_days}',
+        f'last_approved_date: {last_approved_date}\n'
+        f'from: {last_approved_date + relativedelta(days=-1)}\n'
+        f'to yesterday: {yesterday}\n'
+        f'missing_days: {missing_days}\n'
     )
 
     missing_timesheet_entries = []
