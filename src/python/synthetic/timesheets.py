@@ -206,7 +206,7 @@ def workflow():
             )
         else:
             name, surname = item_parts[:2]
-            wfh_date = item_parts[6]
+            wfh_date = item_parts[5]
 
             all_fields = natural_api(
                 session, f'{NATURAL_HR}{approval_link}'
