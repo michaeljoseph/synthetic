@@ -3,6 +3,6 @@
 - [x] rm kraken; bash
 - [x] gh pvt repo
 - [x] rename package
-
-- [ ] poetry << 2019 template 
-- templatise >> python-cli ?
+- [x] pycookiecheat
+- [ ] epitomise
+- [ ] changes
