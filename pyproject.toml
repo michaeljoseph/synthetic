@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "synthetic"
 version = "0.0.1"
-description = "Synthetic naturalhr.net timesheets"
+description = "Synthetic timesheets and approvals for naturalhr"
 authors = ["Michael Joseph <michaeljoseph@gmail.com>"]
 packages = [
     { include = "synthetic", from = "src/python" },

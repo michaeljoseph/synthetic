@@ -1,3 +1,3 @@
 # synthetic 🤖
 
-naturalhr.net timesheets cli tool
+Synthetic timesheets and approvals for naturalhr
