@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -11,10 +10,9 @@ import requests
 import requests_cache
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import DAILY, FR, MO, TH, TU, WE, rrule
+from pycookiecheat import chrome_cookies
 from requests_html import HTMLSession
 from terminaltables import AsciiTable
-
-import browsercookie
 
 log = logging.getLogger(__name__)
 requests_cache.install_cache()
@@ -22,6 +20,7 @@ requests_cache.install_cache()
 # FIXME: envvar
 STANDUP_PATH = Path.home().joinpath('Work/standups')
 NATURAL_HR = 'https://www.naturalhr.net'
+NATURAL_HR_COOKIE = 'PHPSESSID'
 HEADERS = {
     'Connection': 'keep-alive',
     'Cache-Control': 'max-age=0',
@@ -72,48 +71,26 @@ def to_ascii_table(data):
     ).table
 
 
-def get_browser_session_cookie():
-    natural_hr_cookie = None
-    for cookie in browsercookie.chrome():
-        if 'naturalhr' in cookie.domain and 'PHP' in cookie.name:
-            natural_hr_cookie = cookie
-    return natural_hr_cookie
-
-
-def valid_session_cookie(session_cookie):
-    if not session_cookie:
-        return False
-
-    # https://stackoverflow.com/a/1453013
-    home_page = '{}/hr/'.format(NATURAL_HR)
-    url_headers = {'Origin': home_page, 'Referer': home_page}
-    session_cookie = {session_cookie.name: session_cookie.value}
-
-    response = requests.get(
-        home_page,
-        headers=dict(HEADERS, **url_headers),
-        cookies=dict(COOKIES, **session_cookie),
-    )
-    return response.status_code == 200
-
-
 def get_session(cookie=None):
-    session_cookie = get_browser_session_cookie() if not cookie else cookie
-
-    if not valid_session_cookie(session_cookie):
-        echo(
-            'red',
-            'Session cookie {} is invalid, please log in to Natural HR'.format(
-                session_cookie
-            ),
-        )
-        sys.exit(-1)
+    session_cookie = chrome_cookies(NATURAL_HR).get(NATURAL_HR_COOKIE)
+    if not session_cookie:
+        log.error("Could't find a valid session cookie, please log in to Natural HR")
+        raise click.Abort
 
     session = HTMLSession(mock_browser=True)
-    session_cookie = {session_cookie.name: session_cookie.value}
     session.cookies = requests.cookies.cookiejar_from_dict(
-        dict(COOKIES, **session_cookie)
+        dict(COOKIES, **{NATURAL_HR_COOKIE: session_cookie})
     )
+
+    home_page = f'{NATURAL_HR}/hr/'
+    home_response = session.get(
+        home_page, headers=dict(HEADERS, **{'Origin': home_page, 'Referer': home_page})
+    )
+
+    if not home_response.status_code == 200:
+        log.error("Could't find a valid session cookie, please log in to Natural HR")
+        raise click.Abort
+
     return session
 
 
