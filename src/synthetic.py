@@ -177,8 +177,10 @@ def synthetic(debug: bool):
         level=logging.DEBUG if debug else logging.INFO,
     )
 
-@synthetic.command()
+
+@synthetic.command('list')
 def list_timesheets():
+    """List last month's timesheets"""
     session = get_session()
 
     last_months_timesheets = sorted(
@@ -334,8 +336,12 @@ def store_timesheets(session, timesheet_entries):
         echo('yellow', timesheet_entry)
 
 
-@synthetic.command()
+@synthetic.command('store')
 def store_missing_timesheets():
+    """
+    Reads timesheet markdown files and creates timesheets for
+    days without them.
+    """
     session = get_session()
 
     timesheets = get_timesheets(session)
@@ -396,8 +402,9 @@ def confirm_timesheet(session, timesheet):
     echo('green', 'Confirmed timesheet for {}'.format(timesheet.week))
 
 
-@synthetic.command()
+@synthetic.command('confirm')
 def confirm_draft_timesheets():
+    """Submits draft timesheets for approvals."""
     session = get_session()
     # https://stackoverflow.com/questions/4934783/using-python-2-6-how-do-i-get-the-day-of-the-month-as-an-integer
     beginning_of_the_month = datetime.now().day == 1
@@ -415,7 +422,9 @@ def confirm_draft_timesheets():
 
 
 @synthetic.command()
-def workflow():
+@synthetic.command()
+def approve():
+    """Approve timesheet and wfh requests"""
     session = get_session()
 
     workflow_view = natural_api(session, f'{NATURAL_HR}/hr/workflow-view').html.xpath(
