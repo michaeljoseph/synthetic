@@ -490,20 +490,16 @@ def approve():
                 )
             )
 
-    if wfh_requests:
-        print(
-            to_ascii_table(
-                [
-                    dict(name=wfh['name'], wfh_date=wfh['wfh_date'])
-                    for wfh in wfh_requests
-                ]
-            )
+    wfh_requests and print(
+        to_ascii_table(
+            [dict(name=wfh['name'], wfh_date=wfh['wfh_date']) for wfh in wfh_requests]
         )
-        for wfh in wfh_requests:
-            if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
-                print(f'{NATURAL_HR}{wfh["link"]}')
-                print(wfh['payload'])
-                natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
+    )
+    for wfh in wfh_requests:
+        if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
+            print(f'{NATURAL_HR}{wfh["link"]}')
+            print(wfh['payload'])
+            natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
 
     if to_be_approved:
         print(
