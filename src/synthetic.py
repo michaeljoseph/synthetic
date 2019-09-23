@@ -6,6 +6,7 @@ from pathlib import Path
 
 import attr
 import click
+import holidays
 import requests
 import requests_cache
 from dateutil.relativedelta import relativedelta
@@ -13,6 +14,7 @@ from dateutil.rrule import DAILY, FR, MO, TH, TU, WE, rrule
 from pycookiecheat import chrome_cookies
 from requests_html import HTMLSession
 from terminaltables import AsciiTable
+from workdays import networkdays
 
 log = logging.getLogger(__name__)
 requests_cache.install_cache()
@@ -422,6 +424,85 @@ def confirm_draft_timesheets():
 
 
 @synthetic.command()
+def show_time_off():
+    """List time off requests"""
+    session = get_session()
+
+    time_off = []
+    for to in natural_api(session, f'{NATURAL_HR}/hr/self-service/time-off').html.xpath(
+        '//tr'
+    )[2:]:
+        parts = to.text.split()
+        # is_leave = any('Emergency' in part for part in parts)
+        is_wfh = any('Working' in part for part in parts)
+        declined = any('Declined' in part for part in parts)
+        if declined:
+            date_status_parts = parts[-7:]
+        else:
+            date_status_parts = parts[-6:]
+
+        time_off.append(
+            {
+                'leave_type': 'WFH' if is_wfh else 'Leave',
+                'start_date': datetime.strptime(
+                    date_status_parts[0], '%d/%m/%Y'
+                ).strftime('%Y-%m-%d'),
+                'end_date': datetime.strptime(
+                    date_status_parts[1], '%d/%m/%Y'
+                ).strftime('%Y-%m-%d'),
+                'number_of_days': date_status_parts[2],
+                'approved': date_status_parts[4] if not declined else 'Declined',
+                'state': date_status_parts[5] if not declined else '',
+            }
+        )
+
+    print(to_ascii_table(sorted(time_off, key=lambda t: t['start_date'])[::-1]))
+
+
+@synthetic.command()
+@click.argument('leave_type', type=click.Choice(['Leave', 'WFH']))
+@click.argument('start_date', type=click.DateTime())
+@click.argument('end_date', type=click.DateTime())
+def request(leave_type, start_date, end_date):
+    """Request leave or WFH"""
+    session = get_session()
+    emp_id = None
+    for field in natural_api(
+        session, f'{NATURAL_HR}/hr/self-service/time-off-add'
+    ).html.xpath('//input'):
+        if 'name' in field.attrs and field.attrs['name'] == 'emp_id':
+            emp_id = field.attrs['value']
+            break
+
+    if not emp_id:
+        log.error('No employee id field found')
+        raise click.Abort
+
+    leave_request = {
+        'time_off_type': 'Home Emergency'
+        if leave_type == 'Leave'
+        else 'Working From Home'
+        if leave_type == 'WFH'
+        else None,
+        'emp_id': emp_id,
+        'comments': 'Annual Leave' if leave_type == 'Leave' else '',
+        'start_date': start_date.strftime('%d/%m/%Y'),
+        'end_date': end_date.strftime('%d/%m/%Y'),
+        'duration': str(
+            networkdays(
+                start_date.date(),
+                end_date.date(),
+                holidays=holidays.SouthAfrica(years=start_date.year),
+            )
+        ),
+        'submit': '',
+    }
+
+    natural_api_post(
+        session, f'{NATURAL_HR}/hr/self-service/time-off-add', leave_request
+    )
+
+
 @synthetic.command()
 def approve():
     """Approve timesheet and wfh requests"""

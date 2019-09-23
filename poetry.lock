@@ -174,6 +174,18 @@ python-versions = "*"
 version = "0.1.11"
 
 [[package]]
+category = "main"
+description = "Generate and work with holidays in Python"
+name = "holidays"
+optional = false
+python-versions = "*"
+version = "0.9.11"
+
+[package.dependencies]
+python-dateutil = "*"
+six = "*"
+
+[[package]]
 category = "dev"
 description = "File identification library for Python"
 name = "identify"
@@ -627,6 +639,14 @@ python-versions = ">=3.6"
 version = "8.0.2"
 
 [[package]]
+category = "main"
+description = "Workday date utility functions to extend python's datetime"
+name = "workdays"
+optional = false
+python-versions = "*"
+version = "1.4"
+
+[[package]]
 category = "dev"
 description = "Backport of pathlib-compatible object wrapper for zip files"
 name = "zipp"
@@ -638,7 +658,7 @@ version = "0.6.0"
 more-itertools = "*"
 
 [metadata]
-content-hash = "b4077ece57c43a2f44b67c1e4508ac407254d0c230597529a18c465ca289af94"
+content-hash = "7f066e9f2ebbb5b43b7d5b0bd0492f842a8f28e6825976caa4e8bff83257b845"
 python-versions = "^3.6"
 
 [metadata.hashes]
@@ -661,6 +681,7 @@ cryptography = ["24b61e5fcb506424d3ec4e18bca995833839bf13c59fc43e530e488f28d46b8
 cssselect = ["f612ee47b749c877ebae5bb77035d8f4202c6ad0f0fc1271b3c18ad6c4468ecf", "f95f8dedd925fd8f54edb3d2dfb44c190d9d18512377d3c1e2388d16126879bc"]
 docopt = ["49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491"]
 fake-useragent = ["c104998b750eb097eefc28ae28e92d66397598d2cf41a31aa45d5559ef1adf35"]
+holidays = ["4b1b6b5afaf5af8adef0d5a7e37d5085c5fcf70c203f641c1f01e205cbf94516", "915fdb92b596cfb66067010759b4384a9c6bc82931311d5bf07fe04920cc11bc", "b8e3914abe7460e866732c1424b6ab4586f3fa01e3149aec3785d012a0d943a4"]
 identify = ["4f1fe9a59df4e80fcb0213086fcf502bc1765a01ea4fe8be48da3b65afd2a017", "d8919589bd2a5f99c66302fec0ef9027b12ae150b0b0213999ad3f695fc7296e"]
 idna = ["c357b3f628cf53ae2c4c05627ecc484553142ca23264e593d327bcde5e9c3407", "ea8b7f6188e6fa117537c3df7da9fc686d485087abf6ac197f9c46432f7e4a3c"]
 importlib-metadata = ["aa18d7378b00b40847790e7c27e11673d7fed219354109d0e7b9e5b25dc3ad26", "d5f18a79777f3aa179c145737780282e27b508fc8fd688cb17c7a813e8bd39af"]
@@ -704,4 +725,5 @@ w3lib = ["847704b837b2b973cddef6938325d466628e6078266bc2e1f7ac49ba85c34823", "8b
 watchdog = ["965f658d0732de3188211932aeb0bb457587f04f63ab4c1e33eab878e9de961d"]
 wcwidth = ["3df37372226d6e63e1b1e1eda15c594bca98a22d33a23832a90998faa96bc65e", "f4ebe71925af7b40a864553f761ed559b43544f8f71746c2d756c7fe788ade7c"]
 websockets = ["049e694abe33f8a1d99969fee7bfc0ae6761f7fd5f297c58ea933b27dd6805f2", "73ce69217e4655783ec72ce11c151053fcbd5b837cc39de7999e19605182e28a", "83e63aa73331b9ca21af61df8f115fb5fbcba3f281bee650a4ad16a40cd1ef15", "882a7266fa867a2ebb2c0baaa0f9159cabf131cf18c1b4270d79ad42f9208dc5", "8c77f7d182a6ea2a9d09c2612059f3ad859a90243e899617137ee3f6b7f2b584", "8d7a20a2f97f1e98c765651d9fb9437201a9ccc2c70e94b0270f1c5ef29667a3", "a7affaeffbc5d55681934c16bb6b8fc82bb75b175e7fd4dcca798c938bde8dda", "c82e286555f839846ef4f0fdd6910769a577952e1e26aa8ee7a6f45f040e3c2b", "e906128532a14b9d264a43eb48f9b3080d53a9bda819ab45bf56b8039dc606ac", "e9102043a81cdc8b7c8032ff4bce39f6229e4ac39cb2010946c912eeb84e2cb6", "f5cb2683367e32da6a256b60929a3af9c29c212b5091cf5bace9358d03011bf5"]
+workdays = ["0f6cbaf1bba2c3ab2f7e14d8a84582b79e7de4e2ae3e486954724435e55af230"]
 zipp = ["3718b1cbcd963c7d4c5511a8240812904164b7f381b647143a89d3b98f9bcd8e", "f06903e9f1f43b12d371004b4ac7b06ab39a44adc747266928ae6debfa7b3335"]

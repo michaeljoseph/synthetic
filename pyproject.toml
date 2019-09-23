@@ -21,6 +21,8 @@ requests-html = "^0.10.0"
 requests_cache = "^0.4.13"
 terminaltables = "^3.1"
 pycookiecheat = "^0.4.3"
+workdays = "^1.4"
+holidays = "^0.9.11"
 
 [tool.poetry.dev-dependencies]
 pre-commit = "^1.18"
