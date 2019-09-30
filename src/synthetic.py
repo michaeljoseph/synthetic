@@ -249,8 +249,6 @@ def ensure_references(timesheet_entries, references):
     for timesheet_entry in timesheet_entries:
         ymd = '{:%Y-%m-%d}'.format(timesheet_entry.date)
 
-        os.system('bat {}'.format(STANDUP_PATH.joinpath('{}.md'.format(ymd))))
-
         if not timesheet_entry.reference and not stored_references.get(ymd):
             timesheet_entry.reference = choose_reference(references)
         elif not timesheet_entry.reference:
@@ -272,15 +270,26 @@ def ensure_references(timesheet_entries, references):
 
 
 def timesheet_from_standup(day):
+    week_start = day + relativedelta(weekday=MO(-1))
+    za_holidays = holidays.SouthAfrica()
+
+    if day in za_holidays:
+        public_holiday = TimeSheetEntry(
+            week_start, day, '0900', '1700', '0', 'Holiday', za_holidays.get(day)
+        )
+        log.info(public_holiday)
+        return [public_holiday]
+
     standup_path = STANDUP_PATH.joinpath('{:%Y-%m-%d}.md'.format(day))
     if not standup_path.exists():
         # FIXME: my exception
         raise Exception('Missing standup:\n\t{}'.format(standup_path))
 
+    os.system(f'bat {standup_path}')
+
     comments = standup_path.read_text().rstrip()
     comments = '\n'.join(comments.split('\n')[1:])
 
-    week_start = day + relativedelta(weekday=MO(-1))
     if any([x == comments for x in ['Annual Leave', 'Public Holiday']]):
         return [
             TimeSheetEntry(week_start, day, '0900', '1700', '0', 'Holiday', comments)
