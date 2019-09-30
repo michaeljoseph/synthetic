@@ -522,6 +522,7 @@ def approve():
 
         log.debug(workflow_item.text)
         item_parts = workflow_item.text.split()
+        log.debug(item_parts)
         if len(item_parts) == 5:
             name, surname, _, _, week = item_parts
 
@@ -544,7 +545,7 @@ def approve():
             )
         else:
             name, surname = item_parts[:2]
-            wfh_date = item_parts[5]
+            wfh_date = item_parts[6]
 
             all_fields = natural_api(
                 session, f'{NATURAL_HR}{approval_link}'
