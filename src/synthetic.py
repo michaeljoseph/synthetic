@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import attr
@@ -269,6 +269,40 @@ def ensure_references(timesheet_entries, references):
     return updated_timesheets
 
 
+(MON, TUE, WED, THU, FRI, SAT, SUN) = range(7)
+# Define default weekends, but allow this to be overridden at the function level
+# in case someone only, for example, only has a 4-day workweek.
+weekend = (SAT, SUN)
+
+
+def get_leave_days():
+    session = get_session()
+    time_off_dates = []
+    for to in natural_api(session, f'{NATURAL_HR}/hr/self-service/time-off').html.xpath(
+        '//tr'
+    )[2:]:
+        parts = to.text.split()
+        if any('Working' in part for part in parts):
+            continue
+        declined = any('Declined' in part for part in parts)
+        if declined:
+            date_status_parts = parts[-7:]
+        else:
+            date_status_parts = parts[-6:]
+
+        start_date = datetime.strptime(date_status_parts[0], '%d/%m/%Y')
+        end_date = datetime.strptime(date_status_parts[1], '%d/%m/%Y')
+
+        current_date = start_date
+        time_off_dates.append(current_date)
+        while current_date <= end_date:
+            if current_date.weekday() not in weekend:
+                time_off_dates.append(current_date)
+            current_date += timedelta(days=1)
+
+    return set(sorted(time_off_dates))
+
+
 def timesheet_from_standup(day):
     week_start = day + relativedelta(weekday=MO(-1))
     za_holidays = holidays.SouthAfrica()
@@ -279,6 +313,13 @@ def timesheet_from_standup(day):
         )
         log.info(public_holiday)
         return [public_holiday]
+
+    if day in get_leave_days():
+        annual_leave = TimeSheetEntry(
+            week_start, day, '0900', '1700', '0', 'Holiday', 'Annual Leave'
+        )
+        log.info(annual_leave)
+        return [annual_leave]
 
     standup_path = STANDUP_PATH.joinpath('{:%Y-%m-%d}.md'.format(day))
     if not standup_path.exists():
