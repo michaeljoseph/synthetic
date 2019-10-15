@@ -398,28 +398,28 @@ def store_missing_timesheets():
     session = get_session()
 
     timesheets = get_timesheets(session)
-    last_approved_timesheet = sorted(
-        [timesheet for timesheet in timesheets if timesheet.status == 'Approved'],
+    last_timesheet = sorted(
+        timesheets,
         key=lambda t: datetime.strptime(t.week, '%d/%m/%Y'),
     )[-1]
-    timesheet_entries = get_timesheet_entries(session, last_approved_timesheet)
+    timesheet_entries = get_timesheet_entries(session, last_timesheet)
 
-    last_approved_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
+    last_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
     yesterday = datetime.now() + relativedelta(days=-1)
 
     # https://stackoverflow.com/a/11550426
     missing_days = list(
         rrule(
             DAILY,
-            dtstart=last_approved_date + relativedelta(days=1),
+            dtstart=last_date + relativedelta(days=1),
             until=yesterday,
             byweekday=(MO, TU, WE, TH, FR),
         )
     )
 
     log.debug(
-        f'last_approved_date: {last_approved_date}\n'
-        f'from: {last_approved_date + relativedelta(days=-1)}\n'
+        f'last_date: {last_date}\n'
+        f'from: {last_date + relativedelta(days=-1)}\n'
         f'to yesterday: {yesterday}\n'
         f'missing_days: {missing_days}\n'
     )
