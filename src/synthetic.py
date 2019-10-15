@@ -91,8 +91,9 @@ def get_session(cookie=None):
         home_page, headers=dict(HEADERS, **{'Origin': home_page, 'Referer': home_page})
     )
 
-    if not home_response.status_code == 200:
+    if 'redirect' in home_response.url:
         log.error("Could't find a valid session cookie, please log in to Natural HR")
+        click.launch(NATURAL_HR)
         raise click.Abort
 
     return session
