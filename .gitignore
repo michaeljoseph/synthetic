@@ -128,3 +128,4 @@ poetry.lock
 .direnv
 .python-version
 test-reports/
+cache.sqlite

@@ -5,4 +5,13 @@
 - [x] rename package
 - [x] pycookiecheat
 - [x] epitomise
-- [ ] changes
+- [x] toggl.com
+- [x] slack block kit message
+- [x] support pull request review notation
+- [] get meetings from calendar
+- [] giphy api: standup post random gif (keywords)
+- [] changes
+- [] travis => gitlab or github actions
+- [] validate 8h timesheets
+- [] check for existing records and confirm overwrite
+- [] table output of timesheets info

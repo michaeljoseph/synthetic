@@ -1,653 +1,579 @@
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+import re
+from collections import defaultdict, namedtuple
+from datetime import datetime, timedelta, timezone
+from functools import singledispatch
 from pathlib import Path
+from pprint import pprint
+from typing import List
 
 import attr
 import click
-import holidays
-import requests
-import requests_cache
+import coloredlogs
+import dateparser
+import inflect
+import mistune
 from dateutil.relativedelta import relativedelta
-from dateutil.rrule import DAILY, FR, MO, TH, TU, WE, rrule
-from pycookiecheat import chrome_cookies
-from requests_html import HTMLSession
+from dateutil.tz import tzlocal
+from durations import Duration
+from plumbum.cmd import git
+from requests_cache import CachedSession
+from requests_toolbelt.sessions import BaseUrlSession
+from slacker import Slacker
 from terminaltables import AsciiTable
-from workdays import networkdays
 
 log = logging.getLogger(__name__)
-requests_cache.install_cache()
-
-# FIXME: envvar
-STANDUP_PATH = Path.home().joinpath('Work/standups')
-NATURAL_HR = 'https://www.naturalhr.net'
-NATURAL_HR_COOKIE = 'PHPSESSID'
-HEADERS = {
-    'Connection': 'keep-alive',
-    'Cache-Control': 'max-age=0',
-    'Upgrade-Insecure-Requests': '1',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.99 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-COOKIES = {
-    '_ga': 'GA1.2.2023189312.1467903497',
-    'SERVERID': 'http27_49-6020',
-    '_gid': 'GA1.2.607146262.1531921353',
-}
-last_choice = None
-DEFAULT_REFERENCES = ['Quidco BAU']
+# 4h, 15m
+DURATION_REGEX = re.compile(r'(?P<duration>[0-9]+[hm]+)')
+# QCO-9795
+JIRA_REF_REGEX = re.compile(r'(?P<jira_ref>[A-Z]+-[0-9]+)')
+# transaction-rules-engine#4
+PULL_REQUEST_REGEX = re.compile(r'(?P<repo_name>[a-z-]+)#(?P<pr_id>[0-9]+)')
+WORKING_HOURS = dict(start='10am', end='6pm')
 
 
-@attr.s
-class TimeSheet(object):
-    week = attr.ib()
-    status = attr.ib()
-    hours = attr.ib()
-    links = attr.ib(factory=list)
+def local_iso(dt: datetime):
+    return dt.astimezone(tzlocal()).isoformat()
 
-    def link(self, link_type):
-        for link in self.links:
-            if link_type in link:
-                return link
+
+class TogglSession(BaseUrlSession, CachedSession):
+    def __init__(self, token):
+        super().__init__(base_url='https://www.toggl.com/api/v8/')
+        self.auth = (token, 'api_token')
+
+    def projects(self):
+        workspace_id = self.get('workspaces').json()[0]['id']
+        return [
+            Project(id=project['id'], name=project['name'])
+            for project in self.get(f'workspaces/{workspace_id}/projects').json()
+        ]
+
+    def get_project(self, project_name):
+        projects = [
+            project for project in self.projects() if project.name == project_name
+        ]
+        if projects:
+            return projects[0]
         return None
 
 
-@attr.s
-class TimeSheetEntry(object):
-    week = attr.ib()
-    date = attr.ib()
-    start_time = attr.ib()
-    end_time = attr.ib()
-    breaks = attr.ib()
-    reference = attr.ib()
-    comments = attr.ib()
+class JiraSession(BaseUrlSession, CachedSession):
+    def __init__(self, user, token):
+        super().__init__(base_url='https://quidco.atlassian.net/rest/api/latest/')
+        self.auth = (user, token)
 
 
-def echo(colour, message):
-    click.secho(str(message), fg=colour, bold=True)
+class BitbucketSession(BaseUrlSession, CachedSession):
+    def __init__(self, user, token):
+        super().__init__(base_url='https://api.bitbucket.org/2.0/')
+        self.auth = (user, token)
 
 
-def to_ascii_table(data):
-    return AsciiTable(
-        [list(data[0].keys())] + [list(timesheet.values()) for timesheet in data]
-    ).table
+# https://hynek.me/articles/serialization
+@singledispatch
+def to_serializable(val):
+    """Used by default."""
+    return str(val)
 
 
-def get_session(cookie=None):
-    session_cookie = chrome_cookies(NATURAL_HR).get(NATURAL_HR_COOKIE)
-    if not session_cookie:
-        log.error("Could't find a valid session cookie, please log in to Natural HR")
-        raise click.Abort
-
-    session = HTMLSession(mock_browser=True)
-    session.cookies = requests.cookies.cookiejar_from_dict(
-        dict(COOKIES, **{NATURAL_HR_COOKIE: session_cookie})
+@to_serializable.register(datetime)
+def ts_datetime(val):
+    """Used if *val* is an instance of datetime."""
+    return (
+        val.replace(tzinfo=timezone.utc).astimezone().replace(microsecond=0).isoformat()
     )
 
-    home_page = f'{NATURAL_HR}/hr/'
-    home_response = session.get(
-        home_page, headers=dict(HEADERS, **{'Origin': home_page, 'Referer': home_page})
-    )
 
-    if 'redirect' in home_response.url:
-        log.error("Could't find a valid session cookie, please log in to Natural HR")
-        click.launch(NATURAL_HR)
-        raise click.Abort
-
-    return session
+@attr.s(auto_attribs=True)
+class Project:
+    id: int
+    name: str
 
 
-def natural_api(session, url):
-    url_headers = {'Origin': url, 'Referer': url}
-    return session.get(url, headers=dict(HEADERS, **url_headers))
+@attr.s(auto_attribs=True)
+class ListTimeEntry:
+    at: str
+    billable: bool
+    description: str
+    duration: int
+    duronly: bool
+    guid: str
+    id: int
+    pid: int
+    start: str
+    stop: str
+    uid: int
+    wid: int
 
-
-def natural_api_post(session, url, params):
-    url_headers = {'Origin': url, 'Referer': url}
-    headers = dict(HEADERS, **url_headers)
-
-    # https://stackoverflow.com/a/22974646
-    r = session.post(
-        url,
-        headers=headers,
-        files={key: (None, value) for key, value in params.items()},
-    )
-    r.raise_for_status()
-
-    return r
-
-
-def get_references(session):
-    add_timesheet_url = '{}/hr/self-service/timesheets/timesheet-add'.format(NATURAL_HR)
-
-    references = natural_api(session, add_timesheet_url).html.xpath(
-        '//*[@id="reference"]/option'
-    )
-    return [reference.attrs['value'] for reference in references][1:]
-
-
-def get_timesheets(session, status=None):
-    timesheet_index_url = '{}/hr/self-service/timesheets/index'.format(NATURAL_HR)
-
-    rows = natural_api(session, timesheet_index_url).html.xpath('//tr')
-
-    timesheets = []
-    for row in rows[1:]:
-        values = row.text.split('\n')
-
-        timesheet = TimeSheet(
-            week=values[0], hours=values[2], status=values[3], links=list(row.links)
+    @property
+    def payload(self):
+        return dict(
+            id=self.id,
+            description=self.description,
+            start=dateparser.parse(self.start).isoformat(),
+            duration=self.duration,
         )
-        if not status:
-            timesheets.append(timesheet)
-        elif timesheet.status == status:
-            timesheets.append(timesheet)
-
-    return timesheets
 
 
-def get_timesheet_entries(session, timesheet):
-    timesheet_view_url = '{}{}'.format(NATURAL_HR, timesheet.link('timesheet-view'))
+@attr.s(auto_attribs=True)
+class CreateTimeEntry:
+    pid: int
+    jira_ref: str
+    description: str
+    duration: int
+    start: str
+    created_with: str = '🤖synthetic'
 
-    rows = natural_api(session, timesheet_view_url).html.xpath('//tr')
+    @classmethod
+    def from_note(cls, project_id: int, start: datetime, note):
+        return cls(
+            pid=project_id,
+            jira_ref=note.ticket.ref if note.ticket else '',
+            description=note.description,
+            duration=Duration(note.duration).to_seconds(),
+            start=start,
+        )
 
-    entries = []
-    for row in rows[1:]:
-        values = row.text.split('\n')[:5]
-        if len(values) > 4:
-            entry = TimeSheetEntry(
-                week=timesheet.week,
-                date=values[0],
-                start_time=values[1],
-                end_time=values[2],
-                breaks=values[3],
-                reference=values[4],
-                comments=None,
+    @property
+    def json(self):
+        return json.dumps(self.payload, default=to_serializable)
+
+    @property
+    def payload(self):
+        return dict(
+            time_entry=dict(
+                pid=self.pid,
+                description=f'{self.description}'
+                if self.jira_ref
+                else self.description,
+                duration=self.duration,
+                start=self.start.isoformat(),
+                created_with=self.created_with,
             )
-            entries.append(entry)
+        )
 
-    return entries
+
+@attr.s(auto_attribs=True)
+class Standup:
+    date: str
+    friday: List[str] = []
+    yesterday: List[str] = []
+    today: List[str] = []
+    blockers: List[str] = []
+
+    @classmethod
+    def from_markdown(cls, markdown):
+        parsed_markdown = mistune.Markdown(renderer=mistune.AstRenderer())(markdown)
+        current_heading = None
+        categorised = defaultdict(list)
+
+        for markdown_item in parsed_markdown:
+            if markdown_item['type'] == 'heading':
+                if markdown_item['level'] == 1:
+                    categorised['date'] = markdown_item['children'][0]['text']
+                    continue
+
+                current_heading = markdown_item['children'][0]['text'].lower()
+                categorised[current_heading] = []
+                log.debug(current_heading)
+            elif markdown_item['type'] == 'list':
+                log.debug(markdown_item['children'])
+                categorised[current_heading].extend(
+                    [
+                        ''.join([x.get('text', '') for x in item.get('children', {})])
+                        for i in markdown_item['children']
+                        for item in i.get('children', {})
+                    ]
+                )
+            elif markdown_item['type'] == 'paragraph':
+                categorised[current_heading].extend(
+                    [y['text'] for y in markdown_item['children']]
+                )
+            elif markdown_item['type'] == 'thematic_break':
+                break
+            else:
+                print('Ignoring', markdown_item)
+        return Standup(**categorised)
+
+
+@attr.s(auto_attribs=True)
+class Ticket:
+    ref: str
+    link: str
+    status: str
+    title: str
+    description: str
+
+    @classmethod
+    def from_ref(cls, jira, ref: str):
+        ticket = jira.get(f'issue/{ref}').json()
+        return cls(
+            ref=ref,
+            link=f'https://quidco.atlassian.net/browse/{ref}',
+            status=ticket['fields']['status']['name'],
+            title=ticket['fields']['summary'],
+            description=ticket['fields'].get('description') or '',
+        )
+
+
+@attr.s(auto_attribs=True)
+class PullRequest:
+    repo_name: str
+    pr_id: int
+    link: str
+    title: str
+    state: str
+    approvals: int
+    comments: int
+
+    @classmethod
+    def from_ref(cls, bitbucket, repo_name: str, pr_id: int):
+        old_org = ['quidco-web-app', 'quidco-packages']
+        org = 'john_pervanas' if repo_name in old_org else 'maplesyrupgroup'
+        # TODO: gitlab
+        pull_request = bitbucket.get(
+            f'repositories/{org}/{repo_name}/pullrequests/{pr_id}'
+        ).json()
+        return cls(
+            repo_name=repo_name,
+            pr_id=pr_id,
+            link=pull_request['links']['html']['href'],
+            title=pull_request['title'],
+            state=pull_request['state'],
+            approvals=sum(
+                [person['approved'] for person in pull_request['participants']]
+            ),
+            comments=int(pull_request['comment_count']),
+        )
+
+
+@attr.s(auto_attribs=True)
+class Note:  # => TimeEntry => ListTimeEntry 🤷‍♂️
+    text: str
+    duration: str = None
+    ticket: Ticket = None
+
+    @classmethod
+    def from_text(cls, jira, bitbucket, entry_text: str):
+        """
+        - QWA Release Manager 1h
+        - QCO-9452 rebuild event sourcing on kinesis 7h
+        - QCO-9452 continue to rebuild event sourcing
+        - TECH-548 TECH-562 TECH-561 🚀 merged kraken#9, kraken#11, kraken#12 4h
+        # TODO: a note has tickets and pullrequests
+        """
+        ticket = None
+        has_jira_ref = JIRA_REF_REGEX.search(entry_text)
+        if has_jira_ref:
+            jira_ref = has_jira_ref.groupdict()['jira_ref'].strip()
+            ticket = Ticket.from_ref(jira, jira_ref)
+            entry_text = entry_text.replace(jira_ref, '')
+            log.debug(ticket)
+
+        # TODO: gitlab
+        # pull_request = None
+        # has_pr_ref = PULL_REQUEST_REGEX.search(entry_text)
+        # if has_pr_ref:
+        #     has_pr_ref = has_pr_ref.groupdict()
+        #     pull_request = PullRequest.from_ref(
+        #         bitbucket, has_pr_ref['repo_name'], int(has_pr_ref['pr_id'])
+        #     )
+
+        duration = None
+        has_duration = DURATION_REGEX.search(entry_text)
+        if has_duration:
+            duration = has_duration.groupdict()['duration']
+            entry_text = entry_text.replace(duration, '')
+
+        return cls(text=entry_text.strip(), ticket=ticket, duration=duration)
+
+    @property
+    def description(self):
+        return f'{self.ticket.ref} {self.text}' if self.ticket else self.text
 
 
 @click.option('--debug', help='Enables debug logging.', is_flag=True, default=False)
+@click.option('-c', '--no-cache', help='Ignore the cache.', is_flag=True, default=False)
 @click.group(context_settings=dict(help_option_names=[u'-h', u'--help']))
-def synthetic(debug: bool):
-    """Synthetic timesheets and approvals for naturalhr"""
-    logging.basicConfig(
-        format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
+@click.pass_context
+def cli(ctx, debug: bool, no_cache: bool):
+    """Synthetic timesheets and approvals for toggl.com"""
+    coloredlogs.install(
+        fmt='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
         level=logging.DEBUG if debug else logging.INFO,
     )
-
-
-@synthetic.command('list')
-def list_timesheets():
-    """List last month's timesheets"""
-    session = get_session()
-
-    last_months_timesheets = sorted(
-        get_timesheets(session),
-        key=lambda timesheet: datetime.strptime(timesheet.week, '%d/%m/%Y'),
-        reverse=True,
-    )[:4]
-    # TODO: num_weeks argument
-
-    for timesheet in last_months_timesheets:
-        echo('blue', '{week} {status} {hours}'.format(**attr.asdict(timesheet)))
-        timesheet_entries = get_timesheet_entries(session, timesheet)
-        print(
-            to_ascii_table(
-                [attr.asdict(timesheet_entry) for timesheet_entry in timesheet_entries]
-            )
-        )
-
-
-def choose_reference(references):
-    global last_choice
-
-    choice_text = 'Choose a reference (-1 to display references)'
-    reference_text = None
-    while reference_text is None:
-        if last_choice:
-            reference_idx = click.prompt(choice_text, type=int, default=last_choice)
-        else:
-            click.echo(
-                ' '.join(
-                    [
-                        '[{}] {}'.format(index, ref)
-                        for index, ref in enumerate(references)
-                        if ref in DEFAULT_REFERENCES
-                    ]
-                )
-            )
-            reference_idx = click.prompt(choice_text, type=int)
-
-        if reference_idx == -1:
-            click.echo(
-                ' '.join(
-                    [
-                        '[{}] {}'.format(index, ref)
-                        for index, ref in enumerate(references)
-                    ]
-                )
-            )
-        elif reference_idx > len(references):
-            echo('red', 'That is not a valid reference selection.')
-        else:
-            last_choice = reference_idx
-            return references[reference_idx]
-    return None
-
-
-def ensure_references(timesheet_entries, references):
-    reference_store = STANDUP_PATH.joinpath('synthetic.json')
-    stored_references = (
-        json.loads(reference_store.read_text()) if reference_store.exists() else {}
-    )
-
-    updated_timesheets = []
-    for timesheet_entry in timesheet_entries:
-        ymd = '{:%Y-%m-%d}'.format(timesheet_entry.date)
-
-        if not timesheet_entry.reference and not stored_references.get(ymd):
-            timesheet_entry.reference = choose_reference(references)
-        elif not timesheet_entry.reference:
-            timesheet_entry.reference = stored_references[ymd]
-
-        echo('yellow', timesheet_entry.reference)
-        updated_timesheets.append(timesheet_entry)
-
-    stored_references.update(
-        {
-            ymd: timesheet.reference
-            for timesheet in updated_timesheets
-            if timesheet.reference != 'Off Project Work'
-        }
-    )
-    reference_store.write_text(json.dumps(stored_references))
-
-    return updated_timesheets
-
-
-(MON, TUE, WED, THU, FRI, SAT, SUN) = range(7)
-# Define default weekends, but allow this to be overridden at the function level
-# in case someone only, for example, only has a 4-day workweek.
-weekend = (SAT, SUN)
-
-
-def get_leave_days():
-    session = get_session()
-    time_off_dates = []
-    for to in natural_api(session, f'{NATURAL_HR}/hr/self-service/time-off').html.xpath(
-        '//tr'
-    )[2:]:
-        parts = to.text.split()
-        if any('Working' in part for part in parts):
-            continue
-        declined = any('Declined' in part for part in parts)
-        if declined:
-            date_status_parts = parts[-7:]
-        else:
-            date_status_parts = parts[-6:]
-
-        start_date = datetime.strptime(date_status_parts[0], '%d/%m/%Y')
-        end_date = datetime.strptime(date_status_parts[1], '%d/%m/%Y')
-
-        current_date = start_date
-        time_off_dates.append(current_date)
-        while current_date <= end_date:
-            if current_date.weekday() not in weekend:
-                time_off_dates.append(current_date)
-            current_date += timedelta(days=1)
-
-    return set(sorted(time_off_dates))
-
-
-def timesheet_from_standup(day):
-    week_start = day + relativedelta(weekday=MO(-1))
-    za_holidays = holidays.SouthAfrica()
-
-    if day in za_holidays:
-        public_holiday = TimeSheetEntry(
-            week_start, day, '0900', '1700', '0', 'Holiday', za_holidays.get(day)
-        )
-        log.info(public_holiday)
-        return [public_holiday]
-
-    if day in get_leave_days():
-        annual_leave = TimeSheetEntry(
-            week_start, day, '0900', '1700', '0', 'Holiday', 'Annual Leave'
-        )
-        log.info(annual_leave)
-        return [annual_leave]
-
-    standup_path = STANDUP_PATH.joinpath('{:%Y-%m-%d}.md'.format(day))
-    if not standup_path.exists():
-        # FIXME: my exception
-        raise Exception('Missing standup:\n\t{}'.format(standup_path))
-
-    os.system(f'bat {standup_path}')
-
-    comments = standup_path.read_text().rstrip()
-    comments = '\n'.join(comments.split('\n')[1:])
-
-    if any([x == comments for x in ['Annual Leave', 'Public Holiday']]):
-        return [
-            TimeSheetEntry(week_start, day, '0900', '1700', '0', 'Holiday', comments)
-        ]
-
-    if any([x == comments for x in ['Off sick']]):
-        return [
-            TimeSheetEntry(week_start, day, '0900', '1700', '0', 'Off ill', comments)
-        ]
-
-    # docs: Monday is 0
-    if day.weekday() == 4:
-        return [
-            TimeSheetEntry(week_start, day, '0900', '1700', '60', None, comments),
-            TimeSheetEntry(
-                week_start,
-                day,
-                '1700',
-                '1800',
-                '0',
-                'Off Project Work',
-                'Tips and clips.',
+    if not ctx.obj:
+        ctx.obj = namedtuple(
+            'Settings', ['toggl', 'slack', 'jira', 'bitbucket', 'standup_home']
+        )(
+            standup_home=os.environ.get(
+                'STANDUP_HOME', Path.home().joinpath('Work/standups')
             ),
-        ]
+            toggl=TogglSession(os.environ['TOGGL_TOKEN']),
+            slack=Slacker(os.environ['SLACK_TOKEN']),
+            jira=JiraSession(os.environ['JIRA_USER'], os.environ['JIRA_TOKEN']),
+            bitbucket=BitbucketSession(
+                os.environ['BITBUCKET_USER'], os.environ['BITBUCKET_TOKEN']
+            ),
+        )
+        if no_cache:
+            ctx.obj.jira._is_cache_disabled = (
+                ctx.obj.bitbucket._is_cache_disabled
+            ) = True
+
+
+def to_ascii_table(data, fields=None):
+    print(len(data))
+    first_element = data[0]
+    if hasattr(first_element, 'keys'):
+        headings = [key for key in first_element.keys()]
     else:
-        return [TimeSheetEntry(week_start, day, '0900', '1800', '60', None, comments)]
+        headings = list(attr.asdict(first_element).keys())
 
-    raise Exception('No entries for {}'.format(day))
-
-
-def store_timesheets(session, timesheet_entries):
-    add_timesheet_url = '{}/hr/self-service/timesheets/timesheet-add'.format(NATURAL_HR)
-
-    for timesheet_entry in timesheet_entries:
-        # TODO: check if there are existing entries
-        natural_api_post(
-            session,
-            add_timesheet_url,
-            {
-                'week_beginning': '{:%d/%m/%y}'.format(timesheet_entry.week),
-                'date': '{:%a%d/%m/%Y}'.format(timesheet_entry.date),
-                'start': timesheet_entry.start_time,
-                'end': timesheet_entry.end_time,
-                'breaks': timesheet_entry.breaks,
-                'reference': timesheet_entry.reference,
-                'comments': timesheet_entry.comments,
-                'billable': '',
-                'submit_ts': '',
-            },
-        )
-        echo(
-            'green',
-            'Added timesheet entry for {:%a%d/%m/%Y}'.format(timesheet_entry.date),
-        )
-        echo('yellow', timesheet_entry)
+    log.debug(headings)
+    if hasattr(first_element, 'items'):
+        data = [value for timesheet in data for key, value in timesheet.items()]
+    else:
+        data = [
+            value for timesheet in data for value in attr.asdict(timesheet).values()
+        ]
+    log.debug(data)
+    return AsciiTable([headings] + [data]).table
 
 
-@synthetic.command('store')
-def store_missing_timesheets():
-    """
-    Reads timesheet markdown files and creates timesheets for
-    days without them.
-    """
-    session = get_session()
+@cli.command('list')
+@click.pass_obj
+def list_timesheets(settings):
+    # TODO: start and end args?
+    query_params = {
+        'start_date': local_iso(datetime.now() + relativedelta(days=-14)),
+        'end_date': local_iso(datetime.now()),
+    }
+    entries = settings.toggl.get('time_entries', params=query_params).json()
 
-    timesheets = get_timesheets(session)
-    last_timesheet = sorted(
-        timesheets, key=lambda t: datetime.strptime(t.week, '%d/%m/%Y')
-    )[-1]
-    timesheet_entries = get_timesheet_entries(session, last_timesheet)
+    time_entries = [ListTimeEntry(**time_entry) for time_entry in entries]
 
-    last_date = datetime.strptime(timesheet_entries[-1].date, '%d/%m/%Y')
-    yesterday = datetime.now() + relativedelta(days=-1)
+    print(to_ascii_table([time_entry.payload for time_entry in time_entries]))
+    print(to_ascii_table(time_entries))
 
-    # https://stackoverflow.com/a/11550426
-    missing_days = list(
-        rrule(
-            DAILY,
-            dtstart=last_date + relativedelta(days=1),
-            until=yesterday,
-            byweekday=(MO, TU, WE, TH, FR),
-        )
+    # TODO: figure out when no date provided and then loop through missing?
+    # print('; '.join([
+    #     'synthetic store {:%Y-%m-%d}'.format(x + relativedelta(days=1))
+    #     for x in get_missing_days(time_entries)
+    # ]))
+
+
+# TODO: wrap slacker
+def slack_user_id_by_email(slack, email):
+    users = slack.users.list().body['members']
+    users = [u for u in users if u['profile'].get('email') == email]
+
+    user_id = users[0]['id'] if users else None
+    # slack_avatar_url=users[0]['profile']['image_72']
+    return user_id
+
+
+@cli.command('slack')
+@click.argument(
+    'standup-date',
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=f'{datetime.now():%Y-%m-%d}',
+)
+@click.option(
+    '--channel-name', default=git['config', 'user.email']().strip(), show_default=True
+)
+@click.pass_obj
+def slack_post(settings, standup_date, channel_name):
+    settings.jira._is_cache_disabled = settings.bitbucket._is_cache_disabled = True
+
+    markdown_standup_path = Path(settings.standup_home).joinpath(
+        f'{standup_date:%Y-%m-%d}.md'
+    )
+    standup = Standup.from_markdown(markdown_standup_path.read_text())
+    log.info(standup)
+
+    target = (
+        slack_user_id_by_email(settings.slack, channel_name)
+        if '@' in channel_name
+        else channel_name
     )
 
-    log.debug(
-        f'last_date: {last_date}\n'
-        f'from: {last_date + relativedelta(days=-1)}\n'
-        f'to yesterday: {yesterday}\n'
-        f'missing_days: {missing_days}\n'
-    )
+    # TODO: giphy api
+    # images = dict(
+    #     cat_stand='https://media.giphy.com/media/ACVoiOEjbA6nC/giphy.gif',
+    #     standup='https://media.giphy.com/media/RJVUqXW7x4YGHye0Fk/giphy.gif',
+    # )
 
-    missing_timesheet_entries = []
-    for missing_day in missing_days:
-        missing_timesheet_entries.extend(
-            ensure_references(
-                timesheet_from_standup(missing_day), get_references(session)
+    blocks = [
+        # dict(
+        #     type='image',
+        #     title=dict(type='plain_text', text=f':calendar: {standup_date:%Y-%m-%d} :loudspeaker:', emoji=True),
+        #     image_url=random.choice(list(images.values())),
+        #     alt_text='standup'
+        # ),
+        dict(
+            type='section',
+            text=dict(
+                type='mrkdwn', text=f':calendar: {standup_date:%Y-%m-%d} :loudspeaker:'
+            ),
+        )
+    ]
+    emoji_map = {
+        'Yesterday': ':newspaper:',
+        'Today': ':male-technologist:',
+        'Blockers': ':man-raising-hand:',
+    }
+    blocks.append(dict(type='divider'))
+    for section, items in zip(
+        ['Yesterday', 'Today', 'Blockers'],  # , 'Reviews'
+        [standup.yesterday, standup.today, standup.blockers],
+    ):
+        blocks.append(
+            dict(
+                type='section',
+                text=dict(type='mrkdwn', text=f'{emoji_map[section]} *{section}*'),
             )
         )
 
-    store_timesheets(session, missing_timesheet_entries)
+        notes = [
+            Note.from_text(settings.jira, settings.bitbucket, item) for item in items
+        ]
+        log.debug(f'Notes: {notes}')
+
+        if not notes:
+            continue
+
+        notes_as_list = '\n'.join(
+            [
+                f':{inflect.engine().number_to_words(idx+1)}: `{note.description}`'
+                for idx, note in enumerate(notes)
+                if note.description
+            ]
+        )
+        log.debug(notes_as_list)
+
+        blocks.append(
+            dict(type='section', text=dict(type='mrkdwn', text=notes_as_list))
+        )
+
+        tickets = [
+            Ticket.from_ref(settings.jira, jira_ref)
+            for note in notes
+            for jira_ref in JIRA_REF_REGEX.findall(note.description)
+        ]
+        context = [
+            dict(
+                type='mrkdwn',
+                text=f':ticket: {ticket.link} {ticket.title} [*{ticket.status}*] ',
+            )
+            for ticket in tickets
+        ]
+
+        # TODO: PRs
+        pull_requests = [
+            PullRequest.from_ref(settings.bitbucket, repo_name, int(pr_id))
+            for note in notes
+            for repo_name, pr_id in PULL_REQUEST_REGEX.findall(note.description)
+        ]
+        context.extend(
+            [
+                dict(
+                    type='mrkdwn',
+                    # text=f':construction: {pr.link} {pr.title} [*{pr.state}*] :thumbsup: {pr.approvals} :speaking_head_in_silhouette: {pr.comments}',
+                    text=f':construction: {pr.link} :thumbsup: {pr.approvals} :speaking_head_in_silhouette: {pr.comments}\n{pr.title} [*{pr.state}*]',
+                )
+                for pr in pull_requests
+            ]
+        )
+
+        if context:
+            blocks.append(dict(type='context', elements=context))
+
+        if not notes:
+            blocks.append(dict(type='section', text=dict(type='mrkdwn', text='*None*')))
+
+        blocks.append(dict(type='divider'))
+
+    # TODO: consolemd.Renderer().render()
+    log.debug(blocks)
+
+    if click.confirm(f'Post this standup note to {target}'):
+        response = settings.slack.chat.post_message(
+            target,
+            text=f'Standup Post {standup_date:%Y-%m-%d}',
+            # https://api.slack.com/methods/chat.postMessage#arg_blocks
+            blocks=json.dumps(blocks),
+            as_user=True,
+        )
+        log.debug(response)
 
 
-def confirm_timesheet(session, timesheet):
-    confirm_timesheet_url = '{}{}'.format(
-        NATURAL_HR, timesheet.link('timesheet-confirm')
+@cli.command('store')
+@click.argument(
+    'standup_date',
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=f'{datetime.now():%Y-%m-%d}',
+)
+@click.pass_obj
+def store_timesheets(settings, standup_date):
+    # standup contains entries for the day before standup_date
+    standup = Standup.from_markdown(
+        Path(settings.standup_home).joinpath(f'{standup_date:%Y-%m-%d}.md').read_text()
+    )
+    log.info(standup)
+
+    timesheet_date = standup_date + relativedelta(
+        # monday has lasts friday's times
+        days=-3 if standup_date.weekday() == 0 else -1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
 
-    natural_api_post(
-        session,
-        confirm_timesheet_url,
-        {
-            'wb': timesheet.week,
-            # todo: timesheet.hours => minutes
-            'weekTotal': '144000',
-            'check': '1',
-            'emp_comments': '',
-            'submit': '',
-        },
+    params = dict(
+        start_date=local_iso(timesheet_date),
+        end_date=local_iso(timesheet_date + timedelta(days=1)),
     )
-    echo('green', 'Confirmed timesheet for {}'.format(timesheet.week))
-
-
-@synthetic.command('confirm')
-def confirm_draft_timesheets():
-    """Submits draft timesheets for approvals."""
-    session = get_session()
-    # https://stackoverflow.com/questions/4934783/using-python-2-6-how-do-i-get-the-day-of-the-month-as-an-integer
-    beginning_of_the_month = datetime.now().day == 1
-    draft_timesheets = [
-        timesheet
-        for timesheet in get_timesheets(session)
-        if timesheet.status == 'Draft'
-        and (timesheet.hours == '40h 0m' or beginning_of_the_month)
+    time_entries = [
+        ListTimeEntry(**time_entry)
+        for time_entry in settings.toggl.get('time_entries', params=params).json()
     ]
 
-    for timesheet in draft_timesheets:
-        echo('blue', '{week} {status} {hours}'.format(**attr.asdict(timesheet)))
-        echo('yellow', timesheet)
-        confirm_timesheet(session, timesheet)
+    start = dateparser.parse(
+        f'{timesheet_date:%Y-%m-%d} {WORKING_HOURS["start"]}'
+    ).astimezone(tzlocal())
+    log.debug(f'{timesheet_date} => {start}')
+    # TODO: prompt? OR list projects ?? how to reference in standup report?
 
+    for entry_text in standup.yesterday:
+        if not entry_text:
+            continue
+        note = Note.from_text(settings.jira, settings.bitbucket, entry_text)
+        if not note.duration:
+            raise Exception(f'Missing duration in "{entry_text}"')
 
-@synthetic.command()
-def show_time_off():
-    """List time off requests"""
-    session = get_session()
-
-    time_off = []
-    for to in natural_api(session, f'{NATURAL_HR}/hr/self-service/time-off').html.xpath(
-        '//tr'
-    )[2:]:
-        parts = to.text.split()
-        # is_leave = any('Emergency' in part for part in parts)
-        is_wfh = any('Working' in part for part in parts)
-        declined = any('Declined' in part for part in parts)
-        if declined:
-            date_status_parts = parts[-7:]
-        else:
-            date_status_parts = parts[-6:]
-
-        time_off.append(
-            {
-                'leave_type': 'WFH' if is_wfh else 'Leave',
-                'start_date': datetime.strptime(
-                    date_status_parts[0], '%d/%m/%Y'
-                ).strftime('%Y-%m-%d'),
-                'end_date': datetime.strptime(
-                    date_status_parts[1], '%d/%m/%Y'
-                ).strftime('%Y-%m-%d'),
-                'number_of_days': date_status_parts[2],
-                'approved': date_status_parts[4] if not declined else 'Declined',
-                'state': date_status_parts[5] if not declined else '',
-            }
+        project_name = (
+            'Holiday'
+            if note.description in ['Annual Leave', 'Public Holiday']
+            else 'BAU - Q Platform'
         )
 
-    print(to_ascii_table(sorted(time_off, key=lambda t: t['start_date'])[::-1]))
-
-
-@synthetic.command()
-@click.argument('leave_type', type=click.Choice(['Leave', 'WFH']))
-@click.argument('start_date', type=click.DateTime())
-@click.argument('end_date', type=click.DateTime())
-def request(leave_type, start_date, end_date):
-    """Request leave or WFH"""
-    session = get_session()
-    emp_id = None
-    for field in natural_api(
-        session, f'{NATURAL_HR}/hr/self-service/time-off-add'
-    ).html.xpath('//input'):
-        if 'name' in field.attrs and field.attrs['name'] == 'emp_id':
-            emp_id = field.attrs['value']
-            break
-
-    if not emp_id:
-        log.error('No employee id field found')
-        raise click.Abort
-
-    leave_request = {
-        'time_off_type': 'Home Emergency'
-        if leave_type == 'Leave'
-        else 'Working From Home'
-        if leave_type == 'WFH'
-        else None,
-        'emp_id': emp_id,
-        'comments': 'Annual Leave' if leave_type == 'Leave' else '',
-        'start_date': start_date.strftime('%d/%m/%Y'),
-        'end_date': end_date.strftime('%d/%m/%Y'),
-        'duration': str(
-            networkdays(
-                start_date.date(),
-                end_date.date(),
-                holidays=holidays.SouthAfrica(years=start_date.year),
-            )
-        ),
-        'submit': '',
-    }
-
-    natural_api_post(
-        session, f'{NATURAL_HR}/hr/self-service/time-off-add', leave_request
-    )
-
-
-@synthetic.command()
-def approve():
-    """Approve timesheet and wfh requests"""
-    session = get_session()
-
-    workflow_view = natural_api(session, f'{NATURAL_HR}/hr/workflow-view').html.xpath(
-        '//div[@class="content"]//div[@class="media-body"]'
-    )
-    to_be_approved = []
-    wfh_requests = []
-    for workflow_item in workflow_view:
-        approval_link = workflow_item.links.pop()
-        log.debug(approval_link)
-        hidden_fields = natural_api(session, f'{NATURAL_HR}{approval_link}').html.xpath(
-            '//input[@type="hidden"]'
+        entry = CreateTimeEntry.from_note(
+            project_id=settings.toggl.get_project(project_name).id,
+            start=start,
+            note=note,
         )
 
-        log.debug(workflow_item.text)
-        item_parts = workflow_item.text.split()
-        log.debug(item_parts)
-        if len(item_parts) == 5:
-            name, surname, _, _, week = item_parts
+        log.info(entry)
+        description = entry.payload['time_entry']['description']
+        if description in [t.description for t in time_entries]:
+            log.info('Duplicate entry, skipping')
+            continue
 
-            employee_timesheet = {
-                field.attrs['name']: field.attrs['value']
-                for field in hidden_fields
-                if 'name' in field.attrs
-            }
-            for field in ['emp_comments', 'mgr_comments', 'approve']:
-                employee_timesheet[field] = ''
-
-            to_be_approved.append(
-                dict(
-                    name=f'{name} {surname}',
-                    week=week,
-                    hours=int(employee_timesheet['weekTotal']) / 60 / 60,
-                    link=approval_link,
-                    payload=employee_timesheet,
-                )
-            )
-        else:
-            name, surname = item_parts[:2]
-            wfh_date = item_parts[6]
-
-            all_fields = natural_api(
-                session, f'{NATURAL_HR}{approval_link}'
-            ).html.xpath('//input')
-            wfh_request = {
-                field.attrs['name']: field.attrs['value']
-                for field in all_fields
-                if 'name' in field.attrs
-            }
-
-            for field in all_fields:
-                if field.attrs['type'] == 'radio' and 'checked' in field.attrs:
-                    wfh_request[field.attrs['name']] = field.attrs['value']
-
-            for field in ['comments', 'mgr_comments', 'approve']:
-                wfh_request[field] = ''
-            log.info(wfh_request)
-            wfh_requests.append(
-                dict(
-                    name=f'{name} {surname}',
-                    wfh_date=wfh_date,
-                    link=approval_link,
-                    payload=wfh_request,
-                )
-            )
-
-    wfh_requests and print(
-        to_ascii_table(
-            [dict(name=wfh['name'], wfh_date=wfh['wfh_date']) for wfh in wfh_requests]
-        )
-    )
-    for wfh in wfh_requests:
-        if click.confirm(f'✅ WFH for {wfh["name"]} {wfh["wfh_date"]}️'):
-            print(f'{NATURAL_HR}{wfh["link"]}')
-            print(wfh['payload'])
-            natural_api_post(session, f'{NATURAL_HR}{wfh["link"]}', wfh['payload'])
-
-    if to_be_approved:
-        print(
-            to_ascii_table(
-                [
-                    dict(
-                        name=timesheet['name'],
-                        week=timesheet['week'],
-                        hours=timesheet['hours'],
-                    )
-                    for timesheet in to_be_approved
-                ]
-            )
-        )
-        for timesheet in to_be_approved:
-            if click.confirm(f'✅ {timesheet["name"]} {timesheet["week"]}️'):
-                natural_api_post(
-                    session, f'{NATURAL_HR}{timesheet["link"]}', timesheet['payload']
-                )
+        if click.confirm('Add this time entry'):
+            response = settings.toggl.post('time_entries', json=entry.payload).json()
+            pprint(response)
+            start += relativedelta(seconds=+entry.duration)

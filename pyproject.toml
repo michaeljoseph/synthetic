@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "synthetic"
 version = "0.0.1"
-description = "Synthetic timesheets and approvals for naturalhr"
-authors = ["Michael Joseph <michaeljoseph+@gmail.com>"]
+description = "Synthetic timesheets and approvals for naturalhr.net and toggl.com"
+authors = ["Michael Joseph <michaeljoseph+github@gmail.com>"]
 include = [
     "README.md",
     "tox.ini",
@@ -10,7 +10,8 @@ include = [
 ]
 
 [tool.poetry.scripts]
-synthetic = 'synthetic:synthetic'
+naturalhr = 'naturalhr:synthetic'
+synthetic = 'synthetic:cli'
 
 [tool.poetry.dependencies]
 python = "^3.6"
@@ -23,6 +24,14 @@ terminaltables = "^3.1"
 pycookiecheat = "^0.4"
 workdays = "^1.4"
 holidays = "^0.9.11"
+requests_toolbelt = "^0.9.1"
+durations = "^0.3.3"
+dateparser = "^0.7.2"
+mistune = {version = "2.0.0a2", allow-prereleases = true}
+coloredlogs = "^14.0"
+slacker = "^0.14.0"
+plumbum = "^1.6"
+inflect = "^4.1"
 
 [tool.poetry.dev-dependencies]
 pre-commit = "^1.18"
