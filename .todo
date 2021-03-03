@@ -5,4 +5,18 @@
 - [x] rename package
 - [x] pycookiecheat
 - [x] epitomise
-- [ ] changes
+- [x] toggl.com
+- [x] slack block kit message
+- [x] support pull request review notation
+- [] get meetings from calendar
+- [] giphy api: standup post random gif (keywords)
+- [] changes
+- [] travis => gitlab or github actions
+- [] docs: STANDUP_HOME envvar (todo: _DIRECTORY?)
+- [] rm qco references (jira url, bitbucket orgs, toggl default project
+- [] docs: markdown file example from `Note.from_text`, sanitise jira references
+- [] docs: naturalhr format
+- [] validate 8h timesheets
+- [] check for existing records and confirm overwrite
+- [] table output of timesheets info
+
