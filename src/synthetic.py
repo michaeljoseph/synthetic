@@ -399,8 +399,7 @@ def store_missing_timesheets():
 
     timesheets = get_timesheets(session)
     last_timesheet = sorted(
-        timesheets,
-        key=lambda t: datetime.strptime(t.week, '%d/%m/%Y'),
+        timesheets, key=lambda t: datetime.strptime(t.week, '%d/%m/%Y')
     )[-1]
     timesheet_entries = get_timesheet_entries(session, last_timesheet)
 
